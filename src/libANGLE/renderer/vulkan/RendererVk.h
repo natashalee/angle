@@ -164,7 +164,7 @@ class RendererVk : angle::NonCopyable
     vk::ShaderLibrary &getShaderLibrary() { return mShaderLibrary; }
     angle::Result getFullScreenClearShaderProgram(vk::Context *context,
                                                   vk::ShaderProgramHelper **programOut);
-    DispatchUtilsVk *getDispatchUtils() { return &mDispatchUtils; }
+    DispatchUtilsVk &getDispatchUtils() { return mDispatchUtils; }
     const angle::FeaturesVk &getFeatures() const { return mFeatures; }
 
     angle::Result getTimestamp(vk::Context *context, uint64_t *timestampOut);
@@ -179,7 +179,7 @@ class RendererVk : angle::NonCopyable
     {
         if (mGpuEventsEnabled)
             return traceGpuEventImpl(context, commandBuffer, phase, name);
-        return angle::Result::Continue();
+        return angle::Result::Continue;
     }
 
     bool isMockICDEnabled() const { return mEnableMockICD; }

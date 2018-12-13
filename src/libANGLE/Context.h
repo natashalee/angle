@@ -130,7 +130,7 @@ class StateCache final : angle::NonCopyable
     // 9. onDefaultVertexAttributeChange.
     // 10. onActiveTextureChange.
     // 11. onQueryChange.
-    // 12. onTransformFeedbackChange.
+    // 12. onActiveTransformFeedbackChange.
     // 13. onUniformBufferStateChange.
     // 14. onBufferBindingChange.
     intptr_t getBasicDrawStatesError(Context *context) const
@@ -145,6 +145,7 @@ class StateCache final : angle::NonCopyable
 
     // Places that can trigger updateValidDrawModes:
     // 1. onProgramExecutableChange.
+    // 2. onActiveTransformFeedbackChange.
     bool isValidDrawMode(PrimitiveMode primitiveMode) const
     {
         return mCachedValidDrawModes[primitiveMode];
@@ -176,7 +177,7 @@ class StateCache final : angle::NonCopyable
     void onDefaultVertexAttributeChange(Context *context);
     void onActiveTextureChange(Context *context);
     void onQueryChange(Context *context);
-    void onTransformFeedbackChange(Context *context);
+    void onActiveTransformFeedbackChange(Context *context);
     void onUniformBufferStateChange(Context *context);
     void onBufferBindingChange(Context *context);
 
@@ -188,6 +189,8 @@ class StateCache final : angle::NonCopyable
     void updateValidDrawModes(Context *context);
     void updateValidBindTextureTypes(Context *context);
     void updateValidDrawElementsTypes(Context *context);
+
+    void setValidDrawModes(bool pointsOK, bool linesOK, bool trisOK, bool lineAdjOK, bool triAdjOK);
 
     intptr_t getBasicDrawStatesErrorImpl(Context *context) const;
 
@@ -1743,10 +1746,7 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
     angle::Result syncState(const State::DirtyBits &bitMask, const State::DirtyObjects &objectMask);
     angle::Result syncDirtyBits();
     angle::Result syncDirtyBits(const State::DirtyBits &bitMask);
-    ANGLE_INLINE angle::Result syncDirtyObjects(const State::DirtyObjects &objectMask)
-    {
-        return mGLState.syncDirtyObjects(this, objectMask);
-    }
+    angle::Result syncDirtyObjects(const State::DirtyObjects &objectMask);
     angle::Result syncStateForReadPixels();
     angle::Result syncStateForTexImage();
     angle::Result syncStateForBlit();

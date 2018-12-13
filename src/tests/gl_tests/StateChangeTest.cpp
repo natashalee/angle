@@ -333,6 +333,56 @@ TEST_P(StateChangeTest, DisablingBufferedVertexAttribute)
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
+// Tests that setting value for a subset of default attributes doesn't affect others.
+TEST_P(StateChangeTest, SetCurrentAttribute)
+{
+    constexpr char kVS[] = R"(attribute vec4 position;
+attribute mat4 testAttrib;  // Note that this generates 4 attributes
+varying vec4 testVarying;
+void main (void)
+{
+    gl_Position = position;
+
+    testVarying = position.y < 0.0 ?
+                    position.x < 0.0 ? testAttrib[0] : testAttrib[1] :
+                    position.x < 0.0 ? testAttrib[2] : testAttrib[3];
+})";
+
+    ANGLE_GL_PROGRAM(program, kVS, kSimpleAttributeFS);
+    glUseProgram(program);
+    GLint attribLoc   = glGetAttribLocation(program, "testAttrib");
+    GLint positionLoc = glGetAttribLocation(program, "position");
+    ASSERT_NE(-1, attribLoc);
+    ASSERT_NE(-1, positionLoc);
+
+    // Set the current value of two of the test attributes, while leaving the other two as default.
+    glVertexAttrib4f(attribLoc + 1, 0.0f, 1.0f, 0.0f, 1.0f);
+    glVertexAttrib4f(attribLoc + 2, 0.0f, 0.0f, 1.0f, 1.0f);
+
+    // Set up the position attribute.
+    setupQuadVertexBuffer(0.5f, 1.0f);
+    glEnableVertexAttribArray(positionLoc);
+    glVertexAttribPointer(positionLoc, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    // Draw and verify the four section in the output:
+    //
+    //  +---------------+
+    //  | Black | Green |
+    //  +-------+-------+
+    //  | Blue  | Black |
+    //  +---------------+
+    //
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    const int w                            = getWindowWidth();
+    const int h                            = getWindowHeight();
+    constexpr unsigned int kPixelTolerance = 5u;
+    EXPECT_PIXEL_COLOR_NEAR(0, 0, GLColor::black, kPixelTolerance);
+    EXPECT_PIXEL_COLOR_NEAR(w - 1, 0, GLColor::green, kPixelTolerance);
+    EXPECT_PIXEL_COLOR_NEAR(0, h - 1, GLColor::blue, kPixelTolerance);
+    EXPECT_PIXEL_COLOR_NEAR(w - 1, h - 1, GLColor::black, kPixelTolerance);
+}
+
 // Ensure that CopyTexSubImage3D syncs framebuffer changes.
 TEST_P(StateChangeTestES3, CopyTexSubImage3DSync)
 {
@@ -2805,6 +2855,90 @@ void main()
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glEndTransformFeedback();
     EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Simultaneous pack buffer binding should fail";
+}
+
+// Tests that we retain the correct draw mode settings with transform feedback changes.
+TEST_P(ValidationStateChangeTest, TransformFeedbackDrawModes)
+{
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsOSX());
+
+    std::vector<std::string> tfVaryings = {"gl_Position"};
+    ANGLE_GL_PROGRAM_TRANSFORM_FEEDBACK(program, essl3_shaders::vs::Simple(),
+                                        essl3_shaders::fs::Red(), tfVaryings,
+                                        GL_INTERLEAVED_ATTRIBS);
+    glUseProgram(program);
+
+    std::vector<Vector4> positionData;
+    for (const Vector3 &quadVertex : GetQuadVertices())
+    {
+        positionData.emplace_back(quadVertex.x(), quadVertex.y(), quadVertex.z(), 1.0f);
+    }
+
+    GLBuffer arrayBuffer;
+    glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer);
+    glBufferData(GL_ARRAY_BUFFER, positionData.size() * sizeof(Vector4), positionData.data(),
+                 GL_STATIC_DRAW);
+
+    GLint positionLoc = glGetAttribLocation(program, essl3_shaders::PositionAttrib());
+    ASSERT_NE(-1, positionLoc);
+
+    glVertexAttribPointer(positionLoc, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(positionLoc);
+
+    // Set up transform feedback.
+    GLTransformFeedback transformFeedback;
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, transformFeedback);
+
+    constexpr size_t kTransformFeedbackSize = 6 * sizeof(Vector4);
+
+    GLBuffer transformFeedbackBuffer;
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, transformFeedbackBuffer);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, kTransformFeedbackSize * 2, nullptr, GL_STATIC_DRAW);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, transformFeedbackBuffer);
+
+    GLTransformFeedback pointsXFB;
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, pointsXFB);
+    GLBuffer pointsXFBBuffer;
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, pointsXFBBuffer);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 1024, nullptr, GL_STREAM_DRAW);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, pointsXFBBuffer);
+
+    // Begin TRIANGLES, switch to paused POINTS, should be valid.
+    glBeginTransformFeedback(GL_POINTS);
+    glPauseTransformFeedback();
+    ASSERT_GL_NO_ERROR() << "Starting point transform feedback should succeed";
+
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, transformFeedback);
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    EXPECT_GL_NO_ERROR() << "Triangle rendering should succeed";
+    glDrawArrays(GL_POINTS, 0, 6);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Point rendering should fail";
+    glDrawArrays(GL_LINES, 0, 6);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Lines rendering should fail";
+    glPauseTransformFeedback();
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, pointsXFB);
+    glResumeTransformFeedback();
+    glDrawArrays(GL_POINTS, 0, 6);
+    EXPECT_GL_NO_ERROR() << "Point rendering should succeed";
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Triangle rendering should fail";
+    glDrawArrays(GL_LINES, 0, 6);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Lines rendering should fail";
+
+    glEndTransformFeedback();
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, transformFeedback);
+    glEndTransformFeedback();
+    ASSERT_GL_NO_ERROR() << "Ending transform feeback should pass";
+
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
+
+    glDrawArrays(GL_POINTS, 0, 6);
+    EXPECT_GL_NO_ERROR() << "Point rendering should succeed";
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    EXPECT_GL_NO_ERROR() << "Triangle rendering should succeed";
+    glDrawArrays(GL_LINES, 0, 6);
+    EXPECT_GL_NO_ERROR() << "Line rendering should succeed";
 }
 
 // Tests a valid rendering setup with two textures. Followed by a draw with conflicting samplers.

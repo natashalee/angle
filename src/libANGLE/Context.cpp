@@ -123,11 +123,11 @@ angle::Result GetQueryObjectParameter(const Context *context, Query *query, GLen
             bool available;
             ANGLE_TRY(query->isResultAvailable(context, &available));
             *params = CastFromStateValue<T>(pname, static_cast<GLuint>(available));
-            return angle::Result::Continue();
+            return angle::Result::Continue;
         }
         default:
             UNREACHABLE();
-            return angle::Result::Stop();
+            return angle::Result::Stop;
     }
 }
 
@@ -672,7 +672,7 @@ egl::Error Context::makeCurrent(egl::Display *display, egl::Surface *surface)
     }
 
     // Notify the renderer of a context switch.
-    return mImplementation->onMakeCurrent(this).toEGL();
+    return angle::ResultToEGL(mImplementation->onMakeCurrent(this));
 }
 
 egl::Error Context::releaseSurface(const egl::Display *display)
@@ -1176,7 +1176,6 @@ void Context::bindTransformFeedback(GLenum target, GLuint transformFeedbackHandl
     TransformFeedback *transformFeedback =
         checkTransformFeedbackAllocation(transformFeedbackHandle);
     mGLState.setTransformFeedbackBinding(this, transformFeedback);
-    mStateCache.onTransformFeedbackChange(this);
 }
 
 void Context::bindProgramPipeline(GLuint pipelineHandle)
@@ -3167,7 +3166,7 @@ void Context::beginTransformFeedback(PrimitiveMode primitiveMode)
     ASSERT(!transformFeedback->isPaused());
 
     transformFeedback->begin(this, primitiveMode, mGLState.getProgram());
-    mStateCache.onTransformFeedbackChange(this);
+    mStateCache.onActiveTransformFeedbackChange(this);
 }
 
 bool Context::hasActiveTransformFeedback(GLuint program) const
@@ -3476,10 +3475,13 @@ void Context::updateCaps()
     mThreadPool = angle::WorkerThreadPool::Create(mExtensions.parallelShaderCompile);
 
     // Reinitialize some dirty bits that depend on extensions.
-    mDrawDirtyObjects.set(State::DIRTY_OBJECT_DRAW_ATTACHMENTS,
-                          mGLState.isRobustResourceInitEnabled());
-    mBlitDirtyObjects.set(State::DIRTY_OBJECT_DRAW_ATTACHMENTS,
-                          mGLState.isRobustResourceInitEnabled());
+    bool robustInit = mGLState.isRobustResourceInitEnabled();
+    mDrawDirtyObjects.set(State::DIRTY_OBJECT_DRAW_ATTACHMENTS, robustInit);
+    mDrawDirtyObjects.set(State::DIRTY_OBJECT_TEXTURES_INIT, robustInit);
+    mDrawDirtyObjects.set(State::DIRTY_OBJECT_IMAGES_INIT, robustInit);
+    mBlitDirtyObjects.set(State::DIRTY_OBJECT_DRAW_ATTACHMENTS, robustInit);
+    mComputeDirtyObjects.set(State::DIRTY_OBJECT_TEXTURES_INIT, robustInit);
+    mComputeDirtyObjects.set(State::DIRTY_OBJECT_IMAGES_INIT, robustInit);
 
     // Reinitialize state cache after extension changes.
     mStateCache.initialize(this);
@@ -3515,7 +3517,28 @@ bool Context::noopDrawInstanced(PrimitiveMode mode, GLsizei count, GLsizei insta
     return (instanceCount == 0) || noopDraw(mode, count);
 }
 
-angle::Result Context::prepareForDraw(PrimitiveMode mode)
+ANGLE_INLINE angle::Result Context::syncDirtyBits()
+{
+    const State::DirtyBits &dirtyBits = mGLState.getDirtyBits();
+    ANGLE_TRY(mImplementation->syncState(this, dirtyBits, mAllDirtyBits));
+    mGLState.clearDirtyBits();
+    return angle::Result::Continue;
+}
+
+ANGLE_INLINE angle::Result Context::syncDirtyBits(const State::DirtyBits &bitMask)
+{
+    const State::DirtyBits &dirtyBits = (mGLState.getDirtyBits() & bitMask);
+    ANGLE_TRY(mImplementation->syncState(this, dirtyBits, bitMask));
+    mGLState.clearDirtyBits(dirtyBits);
+    return angle::Result::Continue;
+}
+
+ANGLE_INLINE angle::Result Context::syncDirtyObjects(const State::DirtyObjects &objectMask)
+{
+    return mGLState.syncDirtyObjects(this, objectMask);
+}
+
+ANGLE_INLINE angle::Result Context::prepareForDraw(PrimitiveMode mode)
 {
     if (mGLES1Renderer)
     {
@@ -3523,15 +3546,9 @@ angle::Result Context::prepareForDraw(PrimitiveMode mode)
     }
 
     ANGLE_TRY(syncDirtyObjects(mDrawDirtyObjects));
-
-    if (isRobustResourceInitEnabled())
-    {
-        ANGLE_TRY(mGLState.clearUnclearedActiveTextures(this));
-        ASSERT(!mGLState.getDrawFramebuffer()->hasResourceThatNeedsInit());
-    }
-
-    ANGLE_TRY(syncDirtyBits());
-    return angle::Result::Continue();
+    ASSERT(!isRobustResourceInitEnabled() ||
+           !mGLState.getDrawFramebuffer()->hasResourceThatNeedsInit());
+    return syncDirtyBits();
 }
 
 angle::Result Context::prepareForClear(GLbitfield mask)
@@ -3539,7 +3556,7 @@ angle::Result Context::prepareForClear(GLbitfield mask)
     ANGLE_TRY(syncDirtyObjects(mClearDirtyObjects));
     ANGLE_TRY(mGLState.getDrawFramebuffer()->ensureClearAttachmentsInitialized(this, mask));
     ANGLE_TRY(syncDirtyBits(mClearDirtyBits));
-    return angle::Result::Continue();
+    return angle::Result::Continue;
 }
 
 angle::Result Context::prepareForClearBuffer(GLenum buffer, GLint drawbuffer)
@@ -3548,7 +3565,13 @@ angle::Result Context::prepareForClearBuffer(GLenum buffer, GLint drawbuffer)
     ANGLE_TRY(mGLState.getDrawFramebuffer()->ensureClearBufferAttachmentsInitialized(this, buffer,
                                                                                      drawbuffer));
     ANGLE_TRY(syncDirtyBits(mClearDirtyBits));
-    return angle::Result::Continue();
+    return angle::Result::Continue;
+}
+
+ANGLE_INLINE angle::Result Context::prepareForDispatch()
+{
+    ANGLE_TRY(syncDirtyObjects(mComputeDirtyObjects));
+    return syncDirtyBits(mComputeDirtyBits);
 }
 
 angle::Result Context::syncState(const State::DirtyBits &bitMask,
@@ -3556,23 +3579,7 @@ angle::Result Context::syncState(const State::DirtyBits &bitMask,
 {
     ANGLE_TRY(syncDirtyObjects(objectMask));
     ANGLE_TRY(syncDirtyBits(bitMask));
-    return angle::Result::Continue();
-}
-
-angle::Result Context::syncDirtyBits()
-{
-    const State::DirtyBits &dirtyBits = mGLState.getDirtyBits();
-    ANGLE_TRY(mImplementation->syncState(this, dirtyBits, mAllDirtyBits));
-    mGLState.clearDirtyBits();
-    return angle::Result::Continue();
-}
-
-angle::Result Context::syncDirtyBits(const State::DirtyBits &bitMask)
-{
-    const State::DirtyBits &dirtyBits = (mGLState.getDirtyBits() & bitMask);
-    ANGLE_TRY(mImplementation->syncState(this, dirtyBits, bitMask));
-    mGLState.clearDirtyBits(dirtyBits);
-    return angle::Result::Continue();
+    return angle::Result::Continue;
 }
 
 void Context::blitFramebuffer(GLint srcX0,
@@ -4486,7 +4493,7 @@ void *Context::mapBuffer(BufferBinding target, GLenum access)
     Buffer *buffer = mGLState.getTargetBuffer(target);
     ASSERT(buffer);
 
-    if (buffer->map(this, access) == angle::Result::Stop())
+    if (buffer->map(this, access) == angle::Result::Stop)
     {
         return nullptr;
     }
@@ -4500,7 +4507,7 @@ GLboolean Context::unmapBuffer(BufferBinding target)
     ASSERT(buffer);
 
     GLboolean result;
-    if (buffer->unmap(this, &result) == angle::Result::Stop())
+    if (buffer->unmap(this, &result) == angle::Result::Stop)
     {
         return GL_FALSE;
     }
@@ -4516,7 +4523,7 @@ void *Context::mapBufferRange(BufferBinding target,
     Buffer *buffer = mGLState.getTargetBuffer(target);
     ASSERT(buffer);
 
-    if (buffer->mapRange(this, offset, length, access) == angle::Result::Stop())
+    if (buffer->mapRange(this, offset, length, access) == angle::Result::Stop)
     {
         return nullptr;
     }
@@ -4553,7 +4560,7 @@ angle::Result Context::syncStateForPathOperation()
     // TODO(svaisanen@nvidia.com): maybe sync only state required for path rendering?
     ANGLE_TRY(syncDirtyBits());
 
-    return angle::Result::Continue();
+    return angle::Result::Continue;
 }
 
 void Context::activeShaderProgram(GLuint pipeline, GLuint program)
@@ -5328,18 +5335,6 @@ bool Context::getZeroFilledBuffer(size_t requstedSizeBytes,
                                   angle::MemoryBuffer **zeroBufferOut) const
 {
     return mZeroFilledBuffer.getInitialized(requstedSizeBytes, zeroBufferOut, 0);
-}
-
-angle::Result Context::prepareForDispatch()
-{
-    ANGLE_TRY(syncDirtyObjects(mComputeDirtyObjects));
-
-    if (isRobustResourceInitEnabled())
-    {
-        ANGLE_TRY(mGLState.clearUnclearedActiveTextures(this));
-    }
-
-    return syncDirtyBits(mComputeDirtyBits);
 }
 
 void Context::dispatchCompute(GLuint numGroupsX, GLuint numGroupsY, GLuint numGroupsZ)
@@ -6444,7 +6439,7 @@ void Context::endTransformFeedback()
 {
     TransformFeedback *transformFeedback = mGLState.getCurrentTransformFeedback();
     transformFeedback->end(this);
-    mStateCache.onTransformFeedbackChange(this);
+    mStateCache.onActiveTransformFeedbackChange(this);
 }
 
 void Context::transformFeedbackVaryings(GLuint program,
@@ -6521,12 +6516,14 @@ void Context::pauseTransformFeedback()
 {
     TransformFeedback *transformFeedback = mGLState.getCurrentTransformFeedback();
     transformFeedback->pause();
+    mStateCache.onActiveTransformFeedbackChange(this);
 }
 
 void Context::resumeTransformFeedback()
 {
     TransformFeedback *transformFeedback = mGLState.getCurrentTransformFeedback();
     transformFeedback->resume();
+    mStateCache.onActiveTransformFeedbackChange(this);
 }
 
 void Context::getUniformuiv(GLuint program, GLint location, GLuint *params)
@@ -6642,7 +6639,7 @@ GLsync Context::fenceSync(GLenum condition, GLbitfield flags)
     GLsync syncHandle = reinterpret_cast<GLsync>(static_cast<uintptr_t>(handle));
 
     Sync *syncObject = getSync(syncHandle);
-    if (syncObject->set(this, condition, flags) == angle::Result::Stop())
+    if (syncObject->set(this, condition, flags) == angle::Result::Stop)
     {
         deleteSync(syncHandle);
         return nullptr;
@@ -6661,7 +6658,7 @@ GLenum Context::clientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
     Sync *syncObject = getSync(sync);
 
     GLenum result = GL_WAIT_FAILED;
-    if (syncObject->clientWait(this, flags, timeout, &result) == angle::Result::Stop())
+    if (syncObject->clientWait(this, flags, timeout, &result) == angle::Result::Stop)
     {
         return GL_WAIT_FAILED;
     }
@@ -7193,7 +7190,7 @@ GLboolean Context::testFenceNV(GLuint fence)
     ASSERT(fenceObject->isSet() == GL_TRUE);
 
     GLboolean result = GL_TRUE;
-    if (fenceObject->test(this, &result) == angle::Result::Stop())
+    if (fenceObject->test(this, &result) == angle::Result::Stop)
     {
         return GL_TRUE;
     }
@@ -8355,9 +8352,10 @@ void StateCache::onQueryChange(Context *context)
     updateBasicDrawStatesError();
 }
 
-void StateCache::onTransformFeedbackChange(Context *context)
+void StateCache::onActiveTransformFeedbackChange(Context *context)
 {
     updateBasicDrawStatesError();
+    updateValidDrawModes(context);
 }
 
 void StateCache::onUniformBufferStateChange(Context *context)
@@ -8370,33 +8368,79 @@ void StateCache::onBufferBindingChange(Context *context)
     updateBasicDrawStatesError();
 }
 
+void StateCache::setValidDrawModes(bool pointsOK,
+                                   bool linesOK,
+                                   bool trisOK,
+                                   bool lineAdjOK,
+                                   bool triAdjOK)
+{
+    mCachedValidDrawModes[PrimitiveMode::Points]                 = pointsOK;
+    mCachedValidDrawModes[PrimitiveMode::Lines]                  = linesOK;
+    mCachedValidDrawModes[PrimitiveMode::LineStrip]              = linesOK;
+    mCachedValidDrawModes[PrimitiveMode::LineLoop]               = linesOK;
+    mCachedValidDrawModes[PrimitiveMode::Triangles]              = trisOK;
+    mCachedValidDrawModes[PrimitiveMode::TriangleFan]            = trisOK;
+    mCachedValidDrawModes[PrimitiveMode::TriangleStrip]          = trisOK;
+    mCachedValidDrawModes[PrimitiveMode::LinesAdjacency]         = lineAdjOK;
+    mCachedValidDrawModes[PrimitiveMode::LineStripAdjacency]     = lineAdjOK;
+    mCachedValidDrawModes[PrimitiveMode::TrianglesAdjacency]     = triAdjOK;
+    mCachedValidDrawModes[PrimitiveMode::TriangleStripAdjacency] = triAdjOK;
+}
+
 void StateCache::updateValidDrawModes(Context *context)
 {
-    Program *program = context->getGLState().getProgram();
+    const State &state = context->getGLState();
+    Program *program   = state.getProgram();
+
+    TransformFeedback *curTransformFeedback = state.getCurrentTransformFeedback();
+    if (curTransformFeedback && curTransformFeedback->isActive() &&
+        !curTransformFeedback->isPaused())
+    {
+        // ES Spec 3.0 validation text:
+        // When transform feedback is active and not paused, all geometric primitives generated must
+        // match the value of primitiveMode passed to BeginTransformFeedback. The error
+        // INVALID_OPERATION is generated by DrawArrays and DrawArraysInstanced if mode is not
+        // identical to primitiveMode. The error INVALID_OPERATION is also generated by
+        // DrawElements, DrawElementsInstanced, and DrawRangeElements while transform feedback is
+        // active and not paused, regardless of mode. Any primitive type may be used while transform
+        // feedback is paused.
+        if (!context->getExtensions().geometryShader)
+        {
+            mCachedValidDrawModes.fill(false);
+            mCachedValidDrawModes[curTransformFeedback->getPrimitiveMode()] = true;
+            return;
+        }
+
+        // EXT_geometry_shader validation text:
+        // When transform feedback is active and not paused, all geometric primitives generated must
+        // be compatible with the value of <primitiveMode> passed to BeginTransformFeedback. If a
+        // geometry shader is active, the type of primitive emitted by that shader is used instead
+        // of the <mode> parameter passed to drawing commands for the purposes of this error check.
+        // Any primitive type may be used while transform feedback is paused.
+        bool pointsOK = curTransformFeedback->getPrimitiveMode() == PrimitiveMode::Points;
+        bool linesOK  = curTransformFeedback->getPrimitiveMode() == PrimitiveMode::Lines;
+        bool trisOK   = curTransformFeedback->getPrimitiveMode() == PrimitiveMode::Triangles;
+
+        setValidDrawModes(pointsOK, linesOK, trisOK, false, false);
+        return;
+    }
+
     if (!program || !program->hasLinkedShaderStage(ShaderType::Geometry))
     {
         mCachedValidDrawModes = kValidBasicDrawModes;
+        return;
     }
-    else
-    {
-        ASSERT(program && program->hasLinkedShaderStage(ShaderType::Geometry));
 
-        PrimitiveMode gsMode = program->getGeometryShaderInputPrimitiveType();
+    ASSERT(program && program->hasLinkedShaderStage(ShaderType::Geometry));
+    PrimitiveMode gsMode = program->getGeometryShaderInputPrimitiveType();
 
-        mCachedValidDrawModes = {{
-            {PrimitiveMode::Points, gsMode == PrimitiveMode::Points},
-            {PrimitiveMode::Lines, gsMode == PrimitiveMode::Lines},
-            {PrimitiveMode::LineLoop, gsMode == PrimitiveMode::Lines},
-            {PrimitiveMode::LineStrip, gsMode == PrimitiveMode::Lines},
-            {PrimitiveMode::Triangles, gsMode == PrimitiveMode::Triangles},
-            {PrimitiveMode::TriangleStrip, gsMode == PrimitiveMode::Triangles},
-            {PrimitiveMode::TriangleFan, gsMode == PrimitiveMode::Triangles},
-            {PrimitiveMode::LinesAdjacency, gsMode == PrimitiveMode::LinesAdjacency},
-            {PrimitiveMode::LineStripAdjacency, gsMode == PrimitiveMode::LinesAdjacency},
-            {PrimitiveMode::TrianglesAdjacency, gsMode == PrimitiveMode::TrianglesAdjacency},
-            {PrimitiveMode::TriangleStripAdjacency, gsMode == PrimitiveMode::TrianglesAdjacency},
-        }};
-    }
+    bool pointsOK  = gsMode == PrimitiveMode::Points;
+    bool linesOK   = gsMode == PrimitiveMode::Lines;
+    bool trisOK    = gsMode == PrimitiveMode::Triangles;
+    bool lineAdjOK = gsMode == PrimitiveMode::LinesAdjacency;
+    bool triAdjOK  = gsMode == PrimitiveMode::TrianglesAdjacency;
+
+    setValidDrawModes(pointsOK, linesOK, trisOK, lineAdjOK, triAdjOK);
 }
 
 void StateCache::updateValidBindTextureTypes(Context *context)
