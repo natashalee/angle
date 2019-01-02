@@ -383,12 +383,13 @@ SurfaceImpl *DisplayGLX::createPixmapSurface(const egl::SurfaceState &state,
     return nullptr;
 }
 
-ContextImpl *DisplayGLX::createContext(const gl::ContextState &state,
+ContextImpl *DisplayGLX::createContext(const gl::State &state,
+                                       gl::ErrorSet *errorSet,
                                        const egl::Config *configuration,
                                        const gl::Context *shareContext,
                                        const egl::AttributeMap &attribs)
 {
-    return new ContextGL(state, mRenderer);
+    return new ContextGL(state, errorSet, mRenderer);
 }
 
 DeviceImpl *DisplayGLX::createDevice()

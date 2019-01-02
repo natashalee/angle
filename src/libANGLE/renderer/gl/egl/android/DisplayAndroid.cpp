@@ -246,7 +246,8 @@ SurfaceImpl *DisplayAndroid::createPixmapSurface(const egl::SurfaceState &state,
     return nullptr;
 }
 
-ContextImpl *DisplayAndroid::createContext(const gl::ContextState &state,
+ContextImpl *DisplayAndroid::createContext(const gl::State &state,
+                                           gl::ErrorSet *errorSet,
                                            const egl::Config *configuration,
                                            const gl::Context *shareContext,
                                            const egl::AttributeMap &attribs)
@@ -276,7 +277,7 @@ ContextImpl *DisplayAndroid::createContext(const gl::ContextState &state,
         }
     }
 
-    return new ContextEGL(state, renderer);
+    return new ContextEGL(state, errorSet, renderer);
 }
 
 template <typename T>

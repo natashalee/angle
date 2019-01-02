@@ -19,15 +19,16 @@
 #include "common/angleutils.h"
 #include "libANGLE/Caps.h"
 #include "libANGLE/Constants.h"
-#include "libANGLE/ContextState.h"
 #include "libANGLE/Context_gles_1_0_autogen.h"
 #include "libANGLE/Error.h"
 #include "libANGLE/HandleAllocator.h"
 #include "libANGLE/RefCountObject.h"
 #include "libANGLE/ResourceManager.h"
 #include "libANGLE/ResourceMap.h"
+#include "libANGLE/State.h"
 #include "libANGLE/VertexAttribute.h"
 #include "libANGLE/Workarounds.h"
+#include "libANGLE/WorkerThread.h"
 #include "libANGLE/angletypes.h"
 
 namespace rx
@@ -133,6 +134,19 @@ class StateCache final : angle::NonCopyable
     // 12. onActiveTransformFeedbackChange.
     // 13. onUniformBufferStateChange.
     // 14. onBufferBindingChange.
+    bool hasBasicDrawStatesError(Context *context) const
+    {
+        if (mCachedBasicDrawStatesError == 0)
+        {
+            return false;
+        }
+        if (mCachedBasicDrawStatesError != kInvalidPointer)
+        {
+            return true;
+        }
+        return getBasicDrawStatesErrorImpl(context) != 0;
+    }
+
     intptr_t getBasicDrawStatesError(Context *context) const
     {
         if (mCachedBasicDrawStatesError != kInvalidPointer)
@@ -537,7 +551,7 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
     Sync *getSync(GLsync handle) const;
     ANGLE_INLINE Texture *getTexture(GLuint handle) const
     {
-        return mState.mTextures->getTexture(handle);
+        return mState.mTextureManager->getTexture(handle);
     }
 
     Framebuffer *getFramebuffer(GLuint handle) const;
@@ -1682,20 +1696,19 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
     egl::Surface *getCurrentDrawSurface() const { return mCurrentSurface; }
     egl::Surface *getCurrentReadSurface() const { return mCurrentSurface; }
 
-    bool isRobustResourceInitEnabled() const { return mGLState.isRobustResourceInitEnabled(); }
+    bool isRobustResourceInitEnabled() const { return mState.isRobustResourceInitEnabled(); }
 
     bool isCurrentTransformFeedback(const TransformFeedback *tf) const;
 
     bool isCurrentVertexArray(const VertexArray *va) const
     {
-        return mGLState.isCurrentVertexArray(va);
+        return mState.isCurrentVertexArray(va);
     }
 
-    const ContextState &getContextState() const { return mState; }
+    const State &getState() const { return mState; }
     GLint getClientMajorVersion() const { return mState.getClientMajorVersion(); }
     GLint getClientMinorVersion() const { return mState.getClientMinorVersion(); }
     const Version &getClientVersion() const { return mState.getClientVersion(); }
-    const State &getGLState() const { return mState.getState(); }
     const Caps &getCaps() const { return mState.getCaps(); }
     const TextureCapsMap &getTextureCaps() const { return mState.getTextureCaps(); }
     const Extensions &getExtensions() const { return mState.getExtensions(); }
@@ -1709,7 +1722,7 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
 
     ANGLE_INLINE Program *getProgramResolveLink(GLuint handle) const
     {
-        Program *program = mState.mShaderPrograms->getProgram(handle);
+        Program *program = mState.mShaderProgramManager->getProgram(handle);
         if (program)
         {
             program->resolveLink(this);
@@ -1722,12 +1735,12 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
 
     ANGLE_INLINE bool isTextureGenerated(GLuint texture) const
     {
-        return mState.mTextures->isHandleGenerated(texture);
+        return mState.mTextureManager->isHandleGenerated(texture);
     }
 
     ANGLE_INLINE bool isBufferGenerated(GLuint buffer) const
     {
-        return mState.mBuffers->isHandleGenerated(buffer);
+        return mState.mBufferManager->isHandleGenerated(buffer);
     }
 
     bool isRenderbufferGenerated(GLuint renderbuffer) const;
@@ -1807,9 +1820,12 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
 
     void setUniform1iImpl(Program *program, GLint location, GLsizei count, const GLint *v);
 
-    ContextState mState;
+    State mState;
     bool mSkipValidation;
     bool mDisplayTextureShareGroup;
+
+    // Recorded errors
+    ErrorSet mErrors;
 
     // Stores for each buffer binding type whether is it allowed to be used in this context.
     angle::PackedEnumBitSet<BufferBinding> mValidBufferBindings;
@@ -1818,20 +1834,12 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
 
     EGLLabelKHR mLabel;
 
-    // Caps to use for validation
-    Caps mCaps;
-    TextureCapsMap mTextureCaps;
-    Extensions mExtensions;
-    Limitations mLimitations;
-
     // Extensions supported by the implementation plus extensions that are implemented entirely
     // within the frontend.
     Extensions mSupportedExtensions;
 
     // Shader compiler. Lazily initialized hence the mutable value.
     mutable BindingPointer<Compiler> mCompiler;
-
-    State mGLState;
 
     const egl::Config *mConfig;
     EGLenum mClientType;
@@ -1857,9 +1865,6 @@ class Context final : public egl::LabeledObject, angle::NonCopyable, public angl
     std::vector<const char *> mExtensionStrings;
     const char *mRequestableExtensionString;
     std::vector<const char *> mRequestableExtensionStrings;
-
-    // Recorded errors
-    ErrorSet mErrors;
 
     // GLES1 renderer state
     std::unique_ptr<GLES1Renderer> mGLES1Renderer;

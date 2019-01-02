@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "common/angleutils.h"
-#include "libANGLE/ContextState.h"
+#include "libANGLE/State.h"
 #include "libANGLE/renderer/GLImplFactory.h"
 
 namespace gl
@@ -29,7 +29,7 @@ namespace rx
 class ContextImpl : public GLImplFactory
 {
   public:
-    ContextImpl(const gl::ContextState &state);
+    ContextImpl(const gl::State &state, gl::ErrorSet *errorSet);
     ~ContextImpl() override;
 
     virtual void onDestroy(const gl::Context *context) {}
@@ -171,10 +171,9 @@ class ContextImpl : public GLImplFactory
     virtual angle::Result memoryBarrierByRegion(const gl::Context *context,
                                                 GLbitfield barriers)                     = 0;
 
-    const gl::ContextState &getContextState() { return mState; }
+    const gl::State &getState() { return mState; }
     int getClientMajorVersion() const { return mState.getClientMajorVersion(); }
     int getClientMinorVersion() const { return mState.getClientMinorVersion(); }
-    const gl::State &getGLState() const { return mState.getState(); }
     const gl::Caps &getCaps() const { return mState.getCaps(); }
     const gl::TextureCapsMap &getTextureCaps() const { return mState.getTextureCaps(); }
     const gl::Extensions &getExtensions() const { return mState.getExtensions(); }
@@ -185,9 +184,6 @@ class ContextImpl : public GLImplFactory
     // on draw calls we can store the refreshed shaders in the cache.
     void setMemoryProgramCache(gl::MemoryProgramCache *memoryProgramCache);
 
-    // TODO(jmadill): Move init into the constructor. http://anglebug.com/2491
-    void setErrorSet(gl::ErrorSet *errorSet);
-
     void handleError(GLenum errorCode,
                      const char *message,
                      const char *file,
@@ -195,7 +191,7 @@ class ContextImpl : public GLImplFactory
                      unsigned int line);
 
   protected:
-    const gl::ContextState &mState;
+    const gl::State &mState;
     gl::MemoryProgramCache *mMemoryProgramCache;
     gl::ErrorSet *mErrors;
 };

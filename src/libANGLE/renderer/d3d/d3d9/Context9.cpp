@@ -27,8 +27,8 @@
 namespace rx
 {
 
-Context9::Context9(const gl::ContextState &state, Renderer9 *renderer)
-    : ContextD3D(state), mRenderer(renderer)
+Context9::Context9(const gl::State &state, gl::ErrorSet *errorSet, Renderer9 *renderer)
+    : ContextD3D(state, errorSet), mRenderer(renderer)
 {}
 
 Context9::~Context9() {}
@@ -260,7 +260,7 @@ angle::Result Context9::syncState(const gl::Context *context,
                                   const gl::State::DirtyBits &dirtyBits,
                                   const gl::State::DirtyBits &bitMask)
 {
-    mRenderer->getStateManager()->syncState(mState.getState(), dirtyBits);
+    mRenderer->getStateManager()->syncState(mState, dirtyBits);
     return angle::Result::Continue;
 }
 
