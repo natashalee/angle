@@ -1167,6 +1167,10 @@ void OutputHLSL::visitSymbol(TIntermSymbol *node)
             mUsesLocalInvocationIndex = true;
             out << name;
         }
+        else if(variable.symbolType() == SymbolType::UserDefined)
+        {
+            out << DecorateVariableIfNeeded(variable) + std::to_string(variable.uniqueId().get()).c_str();
+        }
         else
         {
             out << DecorateVariableIfNeeded(variable);
@@ -3017,6 +3021,10 @@ void OutputHLSL::writeParameter(const TVariable *param, TInfoSinkBase &out)
     TQualifier qualifier = type.getQualifier();
 
     TString nameStr = DecorateVariableIfNeeded(*param);
+    if (param->symbolType() == SymbolType::UserDefined)
+    {
+      nameStr += std::to_string(param->uniqueId().get()).c_str();
+    }
     ASSERT(nameStr != "");  // HLSL demands named arguments, also for prototypes
 
     if (IsSampler(type.getBasicType()))
