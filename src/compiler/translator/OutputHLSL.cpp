@@ -3023,7 +3023,7 @@ void OutputHLSL::writeParameter(const TVariable *param, TInfoSinkBase &out)
     TString nameStr = DecorateVariableIfNeeded(*param);
     if (param->symbolType() == SymbolType::UserDefined)
     {
-      nameStr += std::to_string(param->uniqueId().get()).c_str();
+        nameStr += std::to_string(param->uniqueId().get()).c_str();
     }
     ASSERT(nameStr != "");  // HLSL demands named arguments, also for prototypes
 
