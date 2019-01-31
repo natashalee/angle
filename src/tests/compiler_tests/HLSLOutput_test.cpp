@@ -197,5 +197,26 @@ TEST_F(HLSLOutputTest, Array)
             }
         })";
     compile(shaderString);
-    EXPECT_TRUE(foundInCode("_arr[2]"));
+    EXPECT_TRUE(foundInCode("_arr1030[2]"));
+}
+
+// Test that initializing array with previously declared array will not be overwritten
+TEST_F(HLSLOutputTest, SameNameArray)
+{
+    const std::string &shaderString =
+        R"(#version 300 es
+        precision highp float;
+        out vec4 my_FragColor;
+
+        void main()
+        {
+          float foo[2] = float[2](1.0, 1.0);
+          {
+            float foo[2] = foo;
+            my_FragColor = vec4(0.0, foo[0], 0.0, foo[1]);
+          }
+        })";
+    compile(shaderString);
+    EXPECT_TRUE(foundInCode("_foo1029[2]"));
+    EXPECT_TRUE(foundInCode("_foo1030[2]"));
 }
